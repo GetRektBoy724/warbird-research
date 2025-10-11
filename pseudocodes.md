@@ -330,3 +330,126 @@ _BOOL8 __fastcall WarbirdFinishSectionModification(_PAGEWX_PREPARATION_INFO *pPa
   return result;
 }
 ```
+
+## MmChangeImageProtection
+
+```c
+__int64 __fastcall MmChangeImageProtection(
+        _MDL *pTargetMdl,
+        unsigned __int64 pHash,
+        __int64 HashSize,
+        int ProtectionFlags)
+{
+  int HashSize2; // r13d
+  ULONG TargetMdlByteCount; // ebp
+  unsigned int TargetMdlPageCount; // ebp
+  _KLDR_DATA_TABLE_ENTRY *pModuleTableEntry; // rax MAPDST
+  int output; // ebx
+  char *TargetModuleBase; // r8
+  unsigned __int64 pHashEnd; // rdx
+  char *TargetModuleEnd; // rax
+  unsigned int Flags; // eax
+  unsigned __int64 *pTargetMdlPfnArray; // r15
+  __int64 i; // r14
+  _MMPFN *pCurrentPfnDatabaseEntry; // rcx
+  unsigned int v21; // r9d
+  __int64 v22; // rdi
+  _DWORD IsLdrTableLocked[14]; // [rsp+20h] [rbp-38h] BYREF
+
+  IsLdrTableLocked[0] = 0;
+  if ( (unsigned int)(ProtectionFlags - 1) > 1 )// Only accepts ProtectionFlag either 1 or 2
+    return 0xC000000DLL;
+  HashSize2 = HashSize;
+  if ( HashSize != (unsigned int)HashSize )
+    return 0xC000000DLL;
+  if ( (pTargetMdl->MdlFlags & 7) != 2 )
+    return 0xC000000DLL;
+  if ( pTargetMdl->ByteOffset )
+    return 0xC000000DLL;
+  TargetMdlByteCount = pTargetMdl->ByteCount;
+  if ( (TargetMdlByteCount & 0xFFF) != 0 )
+    return 0xC000000DLL;
+  TargetMdlPageCount = TargetMdlByteCount >> 0xC;
+  pModuleTableEntry = (_KLDR_DATA_TABLE_ENTRY *)MiLockLoadedDataTableEntryIfNecessary(
+                                                  (__int64)pTargetMdl->StartVa,
+                                                  IsLdrTableLocked);
+  if ( pModuleTableEntry )
+  {
+    TargetModuleBase = (char *)pModuleTableEntry->DllBase;
+    pHashEnd = pHash + HashSize;
+    TargetModuleEnd = &TargetModuleBase[pModuleTableEntry->SizeOfImage];
+    if ( (char *)pTargetMdl->StartVa + pTargetMdl->ByteCount > TargetModuleEnd
+      || pHash < (unsigned __int64)TargetModuleBase
+      || pHashEnd > (unsigned __int64)TargetModuleEnd
+      || pHashEnd - 1 < pHash )
+    {
+      output = 0xC0000018;
+    }
+    else
+    {
+      Flags = pModuleTableEntry->Flags;
+      if ( (Flags & 0x80000) != 0 )
+      {
+        output = 0xC0000043;
+      }
+      else
+      {
+        output = 0;
+        pModuleTableEntry->Flags = Flags | 0x80000;
+        if ( (unsigned int)MI_IS_PHYSICAL_ADDRESS((unsigned __int64)TargetModuleBase) )
+        {
+LABEL_34:
+          output = 0xC0000018;
+        }
+        else
+        {
+          pTargetMdlPfnArray = (unsigned __int64 *)&pTargetMdl[1];
+          for ( i = 0; (unsigned int)i < TargetMdlPageCount; i = (unsigned int)(i + 1) )
+          {
+            pCurrentPfnDatabaseEntry = (_MMPFN *)(0x30 * pTargetMdlPfnArray[i] - 0x220000000000LL);// Get PFN database (MMPFN)
+            if ( (pCurrentPfnDatabaseEntry->u4.EntireField & 0x8000000000000000uLL) != 0LL )// Checks if PrototypePte flag is set.
+              goto LABEL_34;
+            if ( (MiGetPagePrivilege((ULONG_PTR)pCurrentPfnDatabaseEntry) & 0x40) != 0 )
+            {
+              output = 0xC0000045;
+              goto LABEL_24;
+            }
+          }
+          MiSetImageProtection(pModuleTableEntry, (unsigned __int64)pTargetMdl->StartVa, pTargetMdl->ByteCount, 1u);// Protection set to writable
+          if ( ProtectionFlags == 1 )
+          {
+            if ( (MiFlags & 0x4000) == 0
+              || (output = VslValidateDynamicCodePages((__int64)pTargetMdl, pHash, HashSize2), output >= 0) )
+            {
+              v21 = 3;
+              if ( (MiFlags & 0x8000) != 0 && output == 0x12C )
+                v21 = 0x13;
+              MiSetImageProtection(pModuleTableEntry, (unsigned __int64)pTargetMdl->StartVa, pTargetMdl->ByteCount, v21);// Protection set to executable
+              output = 0;
+            }
+          }
+          else if ( (MiFlags & 0x8000) != 0 && TargetMdlPageCount )
+          {
+            v22 = TargetMdlPageCount;
+            do
+            {
+              MiClearPfnImageVerified(0x30 * *pTargetMdlPfnArray++ - 0x220000000000LL, 9);
+              --v22;
+            }
+            while ( v22 );
+          }
+        }
+LABEL_24:
+        pModuleTableEntry->Flags &= ~0x80000u;
+      }
+    }
+    if ( IsLdrTableLocked[0] )
+      MmUnlockLoadedDataTableEntry(pModuleTableEntry);
+  }
+  else
+  {
+    return 0xC0000225;
+  }
+  return (unsigned int)output;
+}
+```
