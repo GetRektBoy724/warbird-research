@@ -81,6 +81,7 @@ __int64 __fastcall WarbirdReencryptSection(_DWORD *DecryptionData1, int *Decrypt
 ```
 
 ## WarbirdEncryptDecryptSection
+
 ```c
 __int64 __fastcall WarbirdEncryptDecryptSection(__int64 DecryptionData1, __int64 DecryptionData2, DWORD IsEncrypt)
 {
@@ -451,5 +452,501 @@ LABEL_24:
     return 0xC0000225;
   }
   return (unsigned int)output;
+}
+```
+
+## VslValidatesDynamicCodePages
+
+```c
+__int64 __fastcall VslValidateDynamicCodePages(_MDL *pTargetMdl, unsigned __int64 pHash, unsigned int HashSize)
+{
+  SIZE_T SizeOfTargetMdl; // rax
+  unsigned __int64 TargetMdlPageCount; // rdx
+  int result; // ebx
+  _VSLP_TRANSFER_STRUCTURE HashTransferData; // [rsp+30h] [rbp-118h] BYREF
+  _SSCN_20H_SKCALL SKCALLPacket; // [rsp+80h] [rbp-C8h] BYREF
+  struct _MDL TargetMdlLvl2; // [rsp+F0h] [rbp-58h] BYREF
+  unsigned __int64 TargetMdlLvl2Pfn; // [rsp+120h] [rbp-28h]
+
+  memset_0(&SKCALLPacket, 0, sizeof(SKCALLPacket));
+  memset(&TargetMdlLvl2.MdlFlags + 1, 0, 0x14);
+  TargetMdlLvl2Pfn = 0;
+  memset_0(&HashTransferData, 0, sizeof(HashTransferData));
+  SizeOfTargetMdl = MmSizeOfMdl(pTargetMdl->StartVa, pTargetMdl->ByteCount + pTargetMdl->ByteOffset);
+  TargetMdlPageCount = (SizeOfTargetMdl + ((unsigned __int16)pTargetMdl & 0xFFF) + 0xFFFLL) >> 0xC;
+  if ( TargetMdlPageCount > 1 )
+    return 0xC000000DLL;
+  TargetMdlLvl2.Next = 0;
+  TargetMdlLvl2.Size = 8 * (TargetMdlPageCount + 6);
+  TargetMdlLvl2.MdlFlags = 0;
+  TargetMdlLvl2.StartVa = (PVOID)((unsigned __int64)pTargetMdl & 0xFFFFFFFFFFFFF000uLL);
+  TargetMdlLvl2.ByteOffset = (unsigned __int16)pTargetMdl & 0xFFF;
+  TargetMdlLvl2.ByteCount = SizeOfTargetMdl;
+  MmProbeAndLockPages(&TargetMdlLvl2, 0, IoReadAccess);
+  result = VslpLockPagesForTransfer(&HashTransferData, pHash, HashSize, IoReadAccess, 0);
+  if ( result >= 0 )
+  {
+    SKCALLPacket.pTargetMdl = pTargetMdl;
+    SKCALLPacket.TargetMdlLvl2Pfn = TargetMdlLvl2Pfn;
+    SKCALLPacket.pHashMdlLvl1 = HashTransferData.pFirstLevelMdl;
+    SKCALLPacket.HashMdlLvl2Pfn = HashTransferData.SecondLevelMdlPfn;
+    result = VslpEnterIumSecureMode(2u, 0x20u, 0, (__int64)&SKCALLPacket);// 2 = Invoke Secure Service
+                                                // 0x20 = SSCN
+    VslpUnlockPagesForTransfer(&HashTransferData);
+  }
+  MmUnlockPages(&TargetMdlLvl2);
+  return (unsigned int)result;
+}
+```
+
+## _VSLP_TRANSFER_STRUCTURE
+
+```c
+struct _VSLP_TRANSFER_STRUCTURE
+{
+  _MDL *pFirstLevelMdl;
+  _MDL SecondLevelMdl;
+  unsigned __int64 SecondLevelMdlPfn;
+  unsigned int Flags;
+};
+```
+
+## _SSCN_20H_PACKET
+
+```c
+struct _SSCN_20H_SKCALL
+{
+  BYTE Unknown1;
+  BYTE Unknown2;
+  WORD SSCN;
+  DWORD Unknown3;
+  _MDL *pTargetMdl;
+  unsigned __int64 TargetMdlLvl2Pfn;
+  _MDL *pHashMdlLvl1;
+  unsigned __int64 HashMdlLvl2Pfn;
+  BYTE UnknownData[64];
+};
+```
+
+## IumInvokeSecureService case 0x20
+
+```c
+      case 0x20:
+          HashMdlLvl2Pfn = *((_QWORD *)SKCALLPacket + 4);
+          pHashMdl = (_MDL *)*((_QWORD *)SKCALLPacket + 3);
+          TargetMdlLvl2Pfn = *((_QWORD *)SKCALLPacket + 2);
+          pTargetMdl = (_MDL *)*((_QWORD *)SKCALLPacket + 1);
+          memset(&SSCN_20H_Params, 0, sizeof(SSCN_20H_Params));
+          if ( (SkmiFlags & 0x10) == 0 )
+            goto LABEL_377;
+          result = SkmmMapDataTransfer(
+                     pHashMdl,
+                     HashMdlLvl2Pfn,
+                     0x80000001,
+                     &SSCN_20H_Params.pCopiedHashMdl,
+                     &SSCN_20H_Params.HashMdlStartVa);// Maps the hash to VTL1
+          if ( result < 0 )
+            goto LABEL_377;
+          if ( SSCN_20H_Params.pCopiedHashMdl->ByteCount )
+          {
+            SSCN_20H_Params.pTargetMdl = pTargetMdl;
+            SSCN_20H_Params.TargetMdlLvl2Pfn = TargetMdlLvl2Pfn;
+            result = SkmiOperateOnLockedNar(
+                       SSCN_20H_Params.HashMdlStartVa,
+                       (__int64 (__fastcall *)(_QWORD *, __int64))SkmiValidateDynamicCodePages,
+                       (__int64)&SSCN_20H_Params);
+          }
+          else
+          {
+            result = 0xC000000D;
+          }
+          SkmmUnmapDataTransfer(SSCN_20H_Params.pCopiedHashMdl);
+          goto LABEL_1227;
+```
+
+## SkmiValidateDynamicCodePages
+
+```c
+__int64 __fastcall SkmiValidateDynamicCodePages(__int64 pNarTreeEntry, _SkmiValidateDynamicCodePages_Params *pParams)
+{
+  __int16 v2; // r8
+  int HashMdlStartVa; // ecx
+  unsigned int v6; // r12d
+  __int64 HashByteCount; // r8
+  ULONG_PTR TargetMdlLvl2Pfn; // rdx
+  __int64 HashMdlRounding; // r14
+  _MDL *pTargetMdl; // rcx
+  unsigned __int64 HashPageCount; // r14
+  __int64 result; // rax
+  ULONG TargetMdlByteCount; // r13d
+  unsigned __int64 v15; // rdx
+  unsigned int TargetMdlPageCount; // r13d
+  unsigned __int64 v17; // rcx
+  int result2; // eax
+  int result4; // esi
+  __int64 *pPteOfTargetCode; // rdi
+  unsigned __int64 *pCurrentCopiedTargetMdlPfnArray; // rbx
+  __int64 TargetMdlPageCount2; // r15
+  __int64 v23; // rax
+  __int64 v24; // r15
+  unsigned int v25; // r12d
+  __int64 v26; // rdx
+  unsigned int i; // ebx
+  __int64 pCurrentPdeOfHashData; // rdx
+  unsigned __int64 *pCurrentPteOfHashData; // rdx
+  unsigned __int64 CurrentPteOfHashData; // rax
+  _MDL *v31; // r8
+  __int64 v33; // r8
+  int v34; // eax
+  int v35; // r8d
+  __int64 PteTrace; // rax
+  PVOID *v37; // r15
+  ULONG v38; // ecx
+  __int64 v39; // rcx
+  __int64 v40; // rcx
+  char *v41; // r15
+  __int64 v42; // r14
+  __int64 v43; // rbx
+  int v44; // r8d
+  __int64 v45; // rax
+  PVOID *v46; // r12
+  ULONG v47; // edx
+  ULONG v48; // ecx
+  __int128 *v49; // rax
+  __int128 *v50; // rbx
+  char *v51; // rsi
+  __int64 v52; // r12
+  unsigned __int64 v53; // rbx
+  int v54; // r8d
+  __int64 v55; // rax
+  __int64 v56; // r15
+  PVOID *v57; // r14
+  ULONG v58; // edx
+  ULONG v59; // ecx
+  __int64 v60; // rcx
+  __int64 v61; // rcx
+  __int128 *Pool; // [rsp+30h] [rbp-69h]
+  int v63; // [rsp+38h] [rbp-61h]
+  _MDL *pCopiedHashMdl; // [rsp+40h] [rbp-59h]
+  _MDL *pCopiedTargetMdl; // [rsp+48h] [rbp-51h] BYREF
+  ULONG BackTraceHash; // [rsp+50h] [rbp-49h] BYREF
+  unsigned int v67; // [rsp+54h] [rbp-45h]
+  unsigned __int64 HashMdlStartVa2; // [rsp+58h] [rbp-41h] MAPDST
+  unsigned __int64 *pCopiedTargetMdlPfnArray; // [rsp+60h] [rbp-39h]
+  unsigned __int64 TargetMdlStartVa; // [rsp+68h] [rbp-31h] MAPDST BYREF
+  unsigned __int64 pPteOfHashData; // [rsp+70h] [rbp-29h]
+  __int64 v72; // [rsp+78h] [rbp-21h] BYREF
+  __int64 v73; // [rsp+80h] [rbp-19h]
+  __int64 v74; // [rsp+88h] [rbp-11h]
+  volatile signed __int64 *v75; // [rsp+90h] [rbp-9h]
+  unsigned __int64 HashPageCount2; // [rsp+98h] [rbp-1h]
+  __int128 v77; // [rsp+A0h] [rbp+7h] BYREF
+  _UNKNOWN *retaddr; // [rsp+F8h] [rbp+5Fh]
+  __int64 v81; // [rsp+110h] [rbp+77h]
+  int result3; // [rsp+118h] [rbp+7Fh]
+
+  v2 = *(_WORD *)(pNarTreeEntry + 0x5E);
+  v72 = 0;
+  pCopiedTargetMdl = 0;
+  TargetMdlStartVa = 0;
+  v63 = 0;
+  v77 = 0;
+  if ( (v2 & 6) != 2 || (v2 & 8) != 0 )
+  {
+    v61 = 0x39;
+    goto LABEL_96;
+  }
+  HashMdlStartVa = pParams->HashMdlStartVa;
+  v6 = HashMdlStartVa - *(_DWORD *)(pNarTreeEntry + 0x18);
+  pCopiedHashMdl = pParams->pCopiedHashMdl;
+  HashByteCount = pParams->pCopiedHashMdl->ByteCount;
+  if ( (unsigned int)HashByteCount + v6 <= v6
+    || (unsigned int)HashByteCount + v6 > *(_DWORD *)(pNarTreeEntry + 0x58) << 0xC )
+  {
+    v61 = 0x1D;
+LABEL_96:
+    SKMI_SECURITY(v61);
+    return 0xC0000018LL;
+  }
+  TargetMdlLvl2Pfn = pParams->TargetMdlLvl2Pfn;
+  HashMdlRounding = (HashMdlStartVa & 0xFFF) + 0xFFFLL;
+  pTargetMdl = pParams->pTargetMdl;
+  HashPageCount = (unsigned __int64)(HashByteCount + HashMdlRounding) >> 0xC;
+  HashPageCount2 = HashPageCount;
+  result = SkmmMapDataTransfer(pTargetMdl, TargetMdlLvl2Pfn, 0x80000001, &pCopiedTargetMdl, &TargetMdlStartVa);// Maps the target memory to VTL1
+  if ( (int)result < 0 )
+    return result;
+  if ( (TargetMdlStartVa & 0xFFF) != 0
+    || (TargetMdlByteCount = pCopiedTargetMdl->ByteCount, (TargetMdlByteCount & 0xFFF) != 0) )// Make sure the target VA and size is page aligned
+  {
+    result4 = 0xC000000D;
+    goto LABEL_91;
+  }
+  v15 = *(_QWORD *)(pNarTreeEntry + 0x18);
+  TargetMdlPageCount = TargetMdlByteCount >> 0xC;
+  pCopiedTargetMdlPfnArray = (unsigned __int64 *)&pCopiedTargetMdl[1];
+  v67 = TargetMdlPageCount;
+  if ( TargetMdlStartVa < v15
+    || (v17 = TargetMdlPageCount + ((TargetMdlStartVa - v15) >> 0xC), v17 > *(unsigned int *)(pNarTreeEntry + 0x58)) )
+  {
+    SKMI_SECURITY(0x3A);
+    result4 = 0xC0000018;
+    goto LABEL_91;
+  }
+  result2 = SkmiLockDriverNtAddresses(v17, TargetMdlStartVa, TargetMdlPageCount);
+  result3 = result2;
+  result4 = result2;
+  if ( result2 < 0 )
+  {
+    if ( result2 == 0xC0000018 )
+      SKMI_SECURITY(0x18);
+    goto LABEL_91;
+  }
+  pPteOfTargetCode = (__int64 *)(((TargetMdlStartVa >> 9) & 0x7FFFFFFFF8LL) - 0xA0000000000LL);
+  if ( TargetMdlPageCount )
+  {
+    pCurrentCopiedTargetMdlPfnArray = pCopiedTargetMdlPfnArray;
+    TargetMdlPageCount2 = TargetMdlPageCount;
+    do
+    {
+      SkmiClaimPhysicalPage(*pCurrentCopiedTargetMdlPfnArray++);
+      --TargetMdlPageCount2;
+    }
+    while ( TargetMdlPageCount2 );
+  }
+  v23 = *(_QWORD *)(pNarTreeEntry + 0x38);
+  v24 = 0;
+  if ( v23 )
+  {
+    v25 = v6 >> 0xC;
+    v73 = *(_QWORD *)(v23 + 8) + 8LL * v25;
+  }
+  else
+  {
+    v25 = 0;
+    v73 = 0;
+  }
+  pPteOfHashData = ((pParams->HashMdlStartVa >> 9) & 0x7FFFFFFFF8LL) - 0xA0000000000LL;
+  if ( (unsigned int)HashPageCount <= 2 )
+  {
+    Pool = &v77;
+  }
+  else
+  {
+    v63 = HashPageCount;
+    Pool = (__int128 *)SkAllocatePool(0x200, 8LL * (unsigned int)HashPageCount, 0x70536D4D);
+    if ( !Pool )
+    {
+      result4 = 0xC000009A;
+      result3 = 0xC000009A;
+      goto LABEL_78;
+    }
+    v24 = 0;
+  }
+  HashMdlStartVa2 = pParams->HashMdlStartVa;
+  LOBYTE(v81) = SkAcquireSpinLockShared(&SkmiNteLock);
+  for ( i = 0; i < (unsigned int)HashPageCount; ++i )
+  {
+    if ( !i || (v24 = i, (((_WORD)pPteOfHashData + 8 * (_WORD)i) & 0xFF8) == 0) )
+    {
+      pCurrentPdeOfHashData = *(_QWORD *)((((pPteOfHashData + 8 * v24) >> 9) & 0x7FFFFFFFF8LL) - 0x98000000000LL);
+      if ( (pCurrentPdeOfHashData & 1) == 0 || (pCurrentPdeOfHashData & 0x80u) != 0LL )// Check if PDE is present and is not large page (2MB), make sures it have individual PTEs
+      {
+        v40 = 0x20;
+        goto LABEL_56;
+      }
+    }
+    pCurrentPteOfHashData = (unsigned __int64 *)(pPteOfHashData + 8 * v24);
+    CurrentPteOfHashData = *pCurrentPteOfHashData;
+    if ( (*pCurrentPteOfHashData & 0x200) == 0 )
+    {
+      v40 = 0x22;
+LABEL_56:
+      SKMI_SECURITY(v40);
+      result4 = 0xC0000005;
+      result3 = 0xC0000005;
+      goto LABEL_57;
+    }
+    if ( (*pCurrentPteOfHashData & 0x801) != 1 && (CurrentPteOfHashData & 0x100) == 0 )
+    {
+      v31 = pCopiedHashMdl;
+LABEL_38:
+      if ( !v73 )
+      {
+        v39 = 0x3B;
+        goto LABEL_52;
+      }
+      *((_QWORD *)Pool + v24) = v73 + 8 * v24;
+      result3 = SkmiLockImagePage(*(_QWORD *)(pNarTreeEntry + 0x38), v25, *((_QWORD *)&v31[1].Next + v24), 2);
+      result4 = result3;
+      if ( result3 < 0 )
+        goto LABEL_57;
+      v34 = SkmiIncrementImagePageReferenceCount(*((_QWORD *)&pCopiedHashMdl[1].Next + v24));
+      v24 = 0;
+      if ( !v34 )
+        result4 = 0xC0000043;
+      result3 = result4;
+      v75 = (volatile signed __int64 *)*((_QWORD *)Pool + i);
+      PteTrace = SkmiGetPteTrace(0, (_DWORD)v75, v35, (unsigned int)*v75 & 0xFFFFFFFD, *v75);
+      v74 = PteTrace;
+      if ( PteTrace )
+      {
+        BackTraceHash = 0;
+        v37 = (PVOID *)(PteTrace + 0x20);
+        memset_0((void *)(PteTrace + 0x20), 0, 0x40u);
+        if ( (SkmiFlags & 0x400000) != 0
+          && KeGetPcr()->NtTib.StackBase
+          && !RtlCaptureStackBackTrace(v38, v26, v37, &BackTraceHash) )
+        {
+          *(_QWORD *)(v74 + 0x28) = retaddr;
+          *v37 = (PVOID)SkmiGetInstructionPointer();
+        }
+        v24 = 0;
+      }
+      _InterlockedAnd64(v75, 0xFFFFFFFFFFFFFFFDuLL);
+      if ( result4 < 0 )
+        goto LABEL_57;
+      goto LABEL_49;
+    }
+    v31 = pCopiedHashMdl;
+    if ( ((CurrentPteOfHashData >> 0xC) & 0xFFFFFFFFFFLL) != *((_QWORD *)&pCopiedHashMdl[1].Next + v24) )
+      goto LABEL_38;
+    *((_QWORD *)Pool + v24) = pCurrentPteOfHashData;
+    result3 = SkmiIncrementNtPageReferenceCount(HashMdlStartVa2, &v72, 0);
+    result4 = result3;
+    if ( result3 < 0 )
+      goto LABEL_51;
+    if ( v72 != *((_QWORD *)&pCopiedHashMdl[1].Next + v24) )
+    {
+      result4 = 0xC0000018;
+      result3 = 0xC0000018;
+LABEL_51:
+      v39 = 0x16;
+LABEL_52:
+      SKMI_SECURITY(v39);
+LABEL_57:
+      LODWORD(HashPageCount) = i;
+      LOBYTE(v26) = v81;
+      if ( (_BYTE)v81 != 0xFF )
+        RtlpReleasePropStoreLockShared(&SkmiNteLock, v26, v33);
+      goto LABEL_71;
+    }
+    v24 = 0;
+LABEL_49:
+    HashMdlStartVa2 += 0x1000LL;
+  }
+  LOBYTE(v26) = v81;
+  RtlpReleasePropStoreLockShared(&SkmiNteLock, v26, 0xFFFFFFFFFFLL);
+  result3 = SkciValidateDynamicCodePages(
+              pCopiedTargetMdl->MappedSystemVa,
+              pCopiedTargetMdl->ByteCount,
+              pParams->pCopiedHashMdl->MappedSystemVa,
+              pParams->pCopiedHashMdl->ByteCount);
+  result4 = result3;
+  if ( result3 >= 0 )
+  {
+    if ( TargetMdlPageCount )
+    {
+      v41 = (char *)((char *)pCopiedTargetMdlPfnArray - (char *)pPteOfTargetCode);
+      v42 = TargetMdlPageCount;
+      do
+      {
+        SkmiProtectSinglePage(*(__int64 *)((char *)pPteOfTargetCode + (_QWORD)v41), 2u);// The first parameter is the dereference of the pCopiedTargetMdlPfnArray
+        v43 = ((*(__int64 *)((_BYTE *)pPteOfTargetCode + (_QWORD)v41) & 0xFFFFFFFFFFLL) << 0xC) | 0x200000000000221LL;
+        v45 = SkmiGetPteTrace(
+                0,
+                (_DWORD)pPteOfTargetCode,
+                v44,
+                (*(_DWORD *)((char *)pPteOfTargetCode + (_QWORD)v41) << 0xC) | 0x221u,
+                *pPteOfTargetCode);
+        v81 = v45;
+        if ( v45 )
+        {
+          LODWORD(pNarTreeEntry) = 0;
+          v46 = (PVOID *)(v45 + 0x20);
+          memset_0((void *)(v45 + 0x20), 0, 0x40u);
+          if ( (SkmiFlags & 0x400000) != 0
+            && KeGetPcr()->NtTib.StackBase
+            && !RtlCaptureStackBackTrace(v48, v47, v46, (PULONG)&pNarTreeEntry) )
+          {
+            *(_QWORD *)(v81 + 0x28) = retaddr;
+            *v46 = (PVOID)SkmiGetInstructionPointer();
+          }
+        }
+        *pPteOfTargetCode++ = v43;
+        --v42;
+      }
+      while ( v42 );
+      result4 = result3;
+      LODWORD(HashPageCount) = HashPageCount2;
+      TargetMdlPageCount = v67;
+    }
+    pPteOfTargetCode = 0;
+  }
+LABEL_71:
+  v49 = Pool;
+  if ( Pool )
+  {
+    if ( (_DWORD)HashPageCount )
+    {
+      v50 = Pool;
+      HashPageCount = (unsigned int)HashPageCount;
+      do
+      {
+        SkmiDecrementPageReferenceCount((**(_QWORD **)v50 >> 0xC) & 0xFFFFFFFFFFLL);
+        v50 = (__int128 *)((char *)v50 + 8);
+        --HashPageCount;
+      }
+      while ( HashPageCount );
+      result4 = result3;
+      v49 = Pool;
+    }
+    if ( v63 )
+      SkFreePool(0x200, v49);
+  }
+LABEL_78:
+  if ( pPteOfTargetCode )
+  {
+    if ( TargetMdlPageCount )
+    {
+      v51 = (char *)((char *)pCopiedTargetMdlPfnArray - (char *)pPteOfTargetCode);
+      v52 = TargetMdlPageCount;
+      do
+      {
+        SkmiReleasePhysicalPage(*(_QWORD *)&v51[(_QWORD)pPteOfTargetCode]);
+        v53 = *pPteOfTargetCode & 0xFFFFFFFFFFFFFBFFuLL;
+        v55 = SkmiGetPteTrace(
+                0,
+                (_DWORD)pPteOfTargetCode,
+                v54,
+                *(_DWORD *)pPteOfTargetCode & 0xFFFFFBFF,
+                *pPteOfTargetCode);
+        v56 = v55;
+        if ( v55 )
+        {
+          LODWORD(pParams) = 0;
+          v57 = (PVOID *)(v55 + 0x20);
+          memset_0((void *)(v55 + 0x20), 0, 0x40u);
+          if ( (SkmiFlags & 0x400000) != 0
+            && KeGetPcr()->NtTib.StackBase
+            && !RtlCaptureStackBackTrace(v59, v58, v57, (PULONG)&pParams) )
+          {
+            *(_QWORD *)(v56 + 0x28) = retaddr;
+            *v57 = (PVOID)SkmiGetInstructionPointer();
+          }
+        }
+        *pPteOfTargetCode++ = v53;
+        --v52;
+      }
+      while ( v52 );
+      result4 = result3;
+    }
+    LOBYTE(v60) = SkmiAcquireNteAssertionLock();
+    SkmiReleaseNteAssertionLock(v60);
+  }
+LABEL_91:
+  if ( pCopiedTargetMdl )
+    SkmmUnmapDataTransfer(pCopiedTargetMdl);
+  return (unsigned int)result4;
 }
 ```
