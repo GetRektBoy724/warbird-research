@@ -80,11 +80,15 @@ Before we arrive at `SkmiValidateDynamicCodePages`, all secure kernel calls will
 
 ![IumInvokeSecureService 0x20](image-12.png)
 
-From the `SkmiOperateOnLockedNar`, the execution is then passed to `SkmiValidateDynamicCodePages` by passing 2 things, a pointer to a NAR tree entry and a structure containing previous parameters like the copied hash MDL thats used to create its own MDL mapping of the hash data, the starting VA of the hash data, the target MDL, and the target MDL PFN. In the `SkmiValidateDynamicCodePages`, it starts with creating its own MDL mapping of the target memory based on the given target MDL and its PFN, because if you remember from before, only the hash data is mapped until now. And then, it locks the driver pages and claim the physical pages of the target memory. After that, it performs some checks on the PTEs of the hash data, like making sure that the PTE is created from MDL mappings, ensuring PDE/PTE hierarchy (must not be LARGE PDE (2MB)), and ofcourse it locks the page that corresponds to that PTE and increments the page reference count.
+From the `SkmiOperateOnLockedNar`, the execution is then passed to `SkmiValidateDynamicCodePages` by passing 2 things, a pointer to a NAR tree entry and a structure containing previous parameters like the copied hash MDL thats used to create its own MDL mapping of the hash data, the starting VA of the hash data, the target MDL, and the target MDL PFN. In the `SkmiValidateDynamicCodePages`, it starts with creating its own MDL mapping of the target memory based on the given target MDL and its PFN, because if you remember from before, only the hash data is mapped until now. And then, it locks the driver pages and claim the physical pages of the target memory.
 
 ![SkmiValidateDynamicCodePages 1](image-13.png)
 
+After that, it performs some checks on the PTEs of the hash data, like making sure that the PTE is created from MDL mappings, ensuring PDE/PTE hierarchy (must not be LARGE PDE (2MB)), and ofcourse it locks the page that corresponds to that PTE and increments the page reference count. Also, there's another check regarding the hash data that happens before the VTL1 mapping of the target memory, it make sure that the hash data is located on a specific offset/region of a memory that is described by the NAR tree entry, which is where the PAGEHrx lives.
+
 ![SkmiValidateDynamicCodePages 2](image-14.png)
+
+![SkmiValidateDynamicCodePages 3](image-21.png)
 
 Next, it will call the function that will validate our dynamic code hash, which is `SkciValidateDynamicCodePages`, which will be discussed deeper in the next part of the analysis, and if it returns `NT_SUCCCESS` codes, it will call `SkmiProtectSinglePage` which will then **modify the EPTE of the target memory so that it will make it executable**. This is the important part, `SkciValidateDynamicCodePages` need to return an `NT_SUCCESS` code so that our target memory, which in this context is those PAGEwx sections, will be marked as executable in the EPTE. Inside `SkmiProtectSinglePage`, it uses either a function called `ShvlpInitiateVariableHypercall` or `ShvlpInitiateFastHypercall`, both of which will emit a `vmcall` that will modify the VTL protection mask. You can check [here](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/overview) to see the operations that `vmcall` can do.
 
@@ -106,7 +110,7 @@ After that, the function will do some clean ups like decrement the page referenc
 
 ![Hash type](image-18.png)
 
-After it generates a hash for a single page of the target memory, it validates the generated hash with the supplied hash. Now here's what I meant with "partial" hashes. As you can see, it only compares the last 32 bytes of the generated SHA512 hash, this means that the hashes stored in `clipsp.sys` are "partial" hashes, because it only stored the last 32 bytes of a SHA512 hash.
+After it generates a hash for a single page of the target memory, it validates the generated hash with the supplied hash. Now here's what I meant with "partial" hashes. As you can see, it only compares the last 32 bytes of the generated SHA512 hash, this means that the hashes stored in `clipsp.sys` are "partial" hashes, because it only **stores the last 32 bytes of a SHA512 hash**.
 
 ![CiValidateFullImagePages 2](image-20.png)
 
@@ -120,8 +124,14 @@ From `SkciValidateDynamicCodePages`, if all dynamic code pages are validated, it
 4. The Secure Kernel (Skmi) and skci.dll perform page-level validation (`CiValidateFullImagePages`). Warbird supplies a “partial” SHA‑512 (last 32 bytes) per page; a successful validation (translated to `0x12c`) causes the VTL1 EPTE to be made executable as well as the VTL0 PTE—otherwise only VTL0 is changed and execution still fails.
 5. This design is an intentional interoperability between ntoskrnl, the Secure Kernel, and skci: it is not a simple bypass of HVCI/VBS but a controlled exception path where VTL1 ultimately authorizes dynamic executable pages after cryptographic validation.
 
+<!--
 # Vulnerability?
 
+1. We can try to supply a hash that is located in a different location within `clipsp.sys` than where it should be (for example, we can write the hash to the `.DATA` section because its writable), but keep the content the same as the original, and see if validation accepts it. We cant directly modify the hash right on where `clipsp.sys` stores it because the hash are stored in a section marked as executable, and ofcourse it would be protected by the EPTE, hence cant be changed to writable.
+2. We can reimplement the warbird encryption and decryption routine, and inject our own instructions or shellcode into the decrypted PAGEwx section right before it calls the `WarbirdFinishSectionModification` function. And in the `WarbirdFinishSectionModification`, we can redirect the hash address to our own custom hash thats based on the injected PAGEwx section.
+
+Update 1 : We **can not** use a hash that is located in a different location, it **must** come from the **original location** which is inside the `PAGEHrx` section. If we want to tamper with the hashes, we **need to** somehow **change the memory protection** of `PAGEHrx` section **to writable**. Counter-exploit : we might be able to use `MmChangeImageProtection` to change the `PAGEHrx` protection to writable since `MmChangeImageProtection` doesnt require hash if we want to change the protection to writable. Without the ability of tampering the hash, the number 2 vulnerability is unexploitable.
+-->
 
 # Resources
 

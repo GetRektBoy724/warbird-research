@@ -668,7 +668,7 @@ __int64 __fastcall SkmiValidateDynamicCodePages(__int64 pNarTreeEntry, _SkmiVali
   pCopiedHashMdl = pParams->pCopiedHashMdl;
   HashByteCount = pParams->pCopiedHashMdl->ByteCount;
   if ( (unsigned int)HashByteCount + v6 <= v6
-    || (unsigned int)HashByteCount + v6 > *(_DWORD *)(pNarTreeEntry + 0x58) << 0xC )
+    || (unsigned int)HashByteCount + v6 > *(_DWORD *)(pNarTreeEntry + 0x58) << 0xC )// Checks if the hash data is outside the boundary of the NAR entry
   {
     v68 = 0x1D;
 LABEL_96:
