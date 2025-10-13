@@ -12,7 +12,7 @@ In this research, all of the binaries that will be analyzed are from Windows 11 
 3. securekernel.exe (v10.0.26100.5074) SHA1 : 0b6d2ea1c1d996370fc6924ae5cf939a220ad160
 4. skci.dll (v10.0.26100.5074) SHA1 : 6d4ae8bf308a702bdb9723c22c38040bba7088b9
 
-### Disclaimer : This is my first ever deep reverse engineering, so don't expect the best quality.
+Disclaimer : This is my first ever deep reverse engineering, so don't expect the best quality. Expect revisions in the future.
 
 ## clipsp.sys
 
