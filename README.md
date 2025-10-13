@@ -7,6 +7,13 @@ Microsoft Warbird, or just Warbird, is an obfuscation framework or some kind of 
 
 In this research, all of the binaries that will be analyzed are from Windows 11 version 24H2 (build 26100.6584).
 
+1. clipsp.sys (v10.0.26100.5074) SHA1 : e5483ceec03e5baa203c12e0d3749e8f66bb5fba
+2. ntoskrnl.exe (v10.0.26100.6584) SHA1 : 16f05adb58478bcfc5e8773dc6ba30a040c2340d
+3. securekernel.exe (v10.0.26100.5074) SHA1 : 0b6d2ea1c1d996370fc6924ae5cf939a220ad160
+4. skci.dll (v10.0.26100.5074) SHA1 : 6d4ae8bf308a702bdb9723c22c38040bba7088b9
+
+### Disclaimer : This is my first ever deep reverse engineering, so don't expect the best quality.
+
 ## clipsp.sys
 
 Our analysis starts at `clipsp.sys`, a kernel driver that is part of the Windows client licensing service. This driver is protected by Warbird. First, before we begin to reverse engineer the inner working of Warbird inside `clipsp.sys`, lets take a look at the "outer" of the PE itself using [PE-bear](https://github.com/hasherezade/pe-bear). If we check on the sections of the PE binary, we can already see some clues/signatures about the presence of Warbird. There are some peculiar sections that are not common on normal PEs, and look at the name of them, `PAGEwx`? `wx` means writable executable? Very interesting indeed.
@@ -26,26 +33,6 @@ Here, we can see that it firsts check if the `WarbirdMutex` is initialized, if i
 As you might notice, these function actually is just a wrapper function for the same function, `WarbirdEncryptDecryptSection`. These 2 function locks the `WarbirdMutex` mutex, and check for the decryption count stored at `DecryptionData2` structure, if the decryption count is is one then the `WarbirdEncryptDecryptSection` re-encrypt it, and if the decryption count is 0 then the `WarbirdEncryptDecryptSection` decrypts it. This is a way for making the warbird encryption and decryption works in a multithreaded case (where multiple threads are using the instructions inside the warbird-packed sections and are trying to decrypt/reencrypt the section at the same time). Next, lets take a look at how `WarbirdEncryptDecryptSection` works.
 
 ![WarbirdEncryptDecryptSection](image-3.png)
-
-```c
-struct _PAGEWX_PREPARATION_INFO
-{
-  DWORD64 NewMdlVa;
-  DWORD64 NewMdlLength;
-  DWORD64 MdlVaToMappingOffset;
-  DWORD IsEncrypt;
-  DWORD Unknown5;
-  DWORD64 PAGEwxN;
-  DWORD64 NewMdl;
-  DWORD64 Mdl;
-  DWORD IsNewMdlLocked;
-  DWORD Unknown9;
-  DWORD64 MdlVaOrSectionVa;
-  DWORD64 LockedMappedMdlVa;
-  DWORD64 MdlLength;
-  DWORD64 PAGEwxIndex;
-};
-```
 
 It first initializes a structure that I call `PAGEWX_PREPARATION_INFO` which contains information like the PAGEwx number and index, MDLs created while encrypting/decrypting the section, current operation (is it encrypt/decrypt), important pointers, and etc. After that, `WarbirdEncryptDecryptSection` will call `WarbirdPrepareSectionForModification`, this function will create the main MDL for the encrypted PAGEwx section, and then use `MmChangeImageProtection` to change the encrypted PAGEwx section to writable (RW). The MmChangeImageProtection is supplied with 4 parameter, first parameter is the PAGEwx main MDL, second parameter is a hash (or atleast partial, more on this later), third parameter is the total size of the hash supplied, and the fourth is the protection flag. MmChangeImageProtection is an undocumented function that, I think, only `clipsp.sys` imports, so we can deduce that MS created this function JUST for kernel-mode warbird. We will talk about `MmChangeImageProtection` further later in this analysis.
 
@@ -85,7 +72,7 @@ Now you might be asking, `what does this have to do with them "partial" hashes y
 
 ![VslValidateDynamicCodePages](image-11.png)
 
-In the next part of our analysis, we will deep dive into `SkmiValidateDynamicCodePages`, which is the secure kernel function in VTL1 that our previous SSCN will point to. 
+In the next part of our analysis, we will deep dive into `SkmiValidateDynamicCodePages`, which is the secure kernel function in VTL1 that our previous SSCN will point to.
 
 ## securekernel.exe - SkmiValidateDynamicCodePages
 
@@ -93,16 +80,55 @@ Before we arrive at `SkmiValidateDynamicCodePages`, all secure kernel calls will
 
 ![IumInvokeSecureService 0x20](image-12.png)
 
-From the `SkmiOperateOnLockedNar`, the execution is then passed to `SkmiValidateDynamicCodePages` by passing 2 things, a pointer to a NAR tree entry and a structure containing previous parameters like the copied hash MDL thats used to create its own MDL mapping of the hash data, the starting VA of the hash data, the target MDL, and the target MDL PFN. In the `SkmiValidateDynamicCodePages`, it starts with creating its own MDL mapping of the target memory based on the given target MDL and its PFN, because if you remember from before, only the hash data is mapped until now. After that, it performs some checks on the PTEs of the hash data, like making sure that the PTE is created from MDL mappings, ensuring PDE/PTE hierarchy (must not be LARGE PDE (2MB)), and then it locks the page that corresponds to that PTE and increments the page reference count. 
+From the `SkmiOperateOnLockedNar`, the execution is then passed to `SkmiValidateDynamicCodePages` by passing 2 things, a pointer to a NAR tree entry and a structure containing previous parameters like the copied hash MDL thats used to create its own MDL mapping of the hash data, the starting VA of the hash data, the target MDL, and the target MDL PFN. In the `SkmiValidateDynamicCodePages`, it starts with creating its own MDL mapping of the target memory based on the given target MDL and its PFN, because if you remember from before, only the hash data is mapped until now. And then, it locks the driver pages and claim the physical pages of the target memory. After that, it performs some checks on the PTEs of the hash data, like making sure that the PTE is created from MDL mappings, ensuring PDE/PTE hierarchy (must not be LARGE PDE (2MB)), and ofcourse it locks the page that corresponds to that PTE and increments the page reference count.
 
 ![SkmiValidateDynamicCodePages 1](image-13.png)
 
 ![SkmiValidateDynamicCodePages 2](image-14.png)
 
-Next, it will call the function that will validate our dynamic code hash, which is `SkciValidateDynamicCodePages`, which will be discussed deeper in the next part of the analysis, and if it returns `NT_SUCCCESS` codes, it will call `SkmiProtectSinglePage` which will then **modify the VTL1 EPTE of the target memory so that it will make it executable**. This is the important part, `SkciValidateDynamicCodePages` need to return an `NT_SUCCESS` code so that our target memory, which in this context is those PAGEwx sections, will be marked as executable in the EPTE. Inside `SkmiProtectSinglePage`, it uses either a function called `ShvlpInitiateVariableHypercall` or `ShvlpInitiateFastHypercall`, both of which will emit a `vmcall` that will modify the VTL protection mask. You can check [here](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/overview) to see the operations that `vmcall` can do.
+Next, it will call the function that will validate our dynamic code hash, which is `SkciValidateDynamicCodePages`, which will be discussed deeper in the next part of the analysis, and if it returns `NT_SUCCCESS` codes, it will call `SkmiProtectSinglePage` which will then **modify the EPTE of the target memory so that it will make it executable**. This is the important part, `SkciValidateDynamicCodePages` need to return an `NT_SUCCESS` code so that our target memory, which in this context is those PAGEwx sections, will be marked as executable in the EPTE. Inside `SkmiProtectSinglePage`, it uses either a function called `ShvlpInitiateVariableHypercall` or `ShvlpInitiateFastHypercall`, both of which will emit a `vmcall` that will modify the VTL protection mask. You can check [here](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/overview) to see the operations that `vmcall` can do.
 
 ![SkmiValidateDynamicCodePages 3](image-15.png)
 
 After that, the function will do some clean ups like decrement the page reference count, release physical pages, release other locks, and unmap the mapped target memory that came from VTL0. And when the function returns to `IumInvokeSecureService`, it will then unmap the mapped hash data that came from VTL0 too. On the next part of our analysis, we will discuss deeper about `SkciValidateDynamicCodePages`, what parameters it takes, how it generates the hash, and explains the "partial" hash from `clipsp.sys`.
 
 ## skci.dll - SkciValidateDynamicCodePages
+
+`SkciValidateDynamicCodePages` is the function that will validate our dynamic code by generating a hash over the dynamic code and **comparing it with the one that it supplied with**. It takes 4 parameter, the first one is the target memory (which in this context is our dynamic code or the PAGEwx section), the second one is the target memory length, the third one is the hash, and the last one is the hash length. This function essentially is just a wrapper code for `CiValidateFullImagePages`, which is the one that actually generates the hash and compares it, and it will take `CiValidateFullImagePages`s return value and outputs `0x12c` if it returns a `NT_SUCCESS` code. We will analyze `CiValidateFullImagePages` in this part of the analysis.
+
+![SkciValidateDynamicCodePages](image-16.png)
+
+![CiValidateFullImagePages params](image-17.png)
+
+`CiValidateFullImagePages` first calculates if the supplied hash is enough to validate all of the target memory. Next, it checks if the HashType is 0x800c, which corresponds to SHA256 hash type, if it is then it will acquire a parallel hashing context which will be used to hash up to 8 pages at a time using `SymCryptParallelSha256Process`, but because the hash type supplied from `SkciValidateDynamicCodePages` is 0x800E, we can disregard this. Instead, it will generate a hash for a single page of the target memory using `HashKComputeMemoryHash` function. Inside, it will call `HashpInitHash`, and from here, we know that 0x800E hash type corresponds to SHA512.
+
+![CiValidateFullImagePages 1](image-19.png)
+
+![Hash type](image-18.png)
+
+After it generates a hash for a single page of the target memory, it validates the generated hash with the supplied hash. Now here's what I meant with "partial" hashes. As you can see, it only compares the last 32 bytes of the generated SHA512 hash, this means that the hashes stored in `clipsp.sys` are "partial" hashes, because it only stored the last 32 bytes of a SHA512 hash.
+
+![CiValidateFullImagePages 2](image-20.png)
+
+From `SkciValidateDynamicCodePages`, if all dynamic code pages are validated, it will carry this `0x12c` return value back to `MmChangeImageProtection`.
+
+# Recap
+
+1. This analysis shows Warbird is a deliberate Windows kernel mechanism that enables controlled dynamic kernel code by packing sensitive routines into PAGEwx sections, decrypting them on-demand, running them, then re-encrypting them.
+2. Warbird uses MDLs and writable mappings plus a custom Feistel cipher to protect and modify section contents, and coordinates concurrent access with a mutex and decryption counters.
+3. The critical enabler is `MmChangeImageProtection`: it mediates VTL0/VTL1 behavior by calling `VslValidateDynamicCodePages`, which packages MDLs and partial hashes into a vmcall (SSCN) to the Secure Kernel (`SkmiValidateDynamicCodePages`).
+4. The Secure Kernel (Skmi) and skci.dll perform page-level validation (`CiValidateFullImagePages`). Warbird supplies a “partial” SHA‑512 (last 32 bytes) per page; a successful validation (translated to `0x12c`) causes the VTL1 EPTE to be made executable as well as the VTL0 PTE—otherwise only VTL0 is changed and execution still fails.
+5. This design is an intentional interoperability between ntoskrnl, the Secure Kernel, and skci: it is not a simple bypass of HVCI/VBS but a controlled exception path where VTL1 ultimately authorizes dynamic executable pages after cryptographic validation.
+
+# Vulnerability?
+
+
+# Resources
+
+Here's a few resources that I can recommend if you're interested more about VBS, HVCI, and/or VTL1/Securekernel :
+
+1. [Connor McGarr's HVCI blog post](https://connormcgarr.github.io/hvci)
+2. [Connor McGarr's Secure Images](https://connormcgarr.github.io/secure-images/)
+3. [Connor McGarr's KM Shadow Stacks](https://connormcgarr.github.io/km-shadow-stacks/)
+4. [Intel VT-rp Part 1 by tandasat](https://tandasat.github.io/blog/2023/07/05/intel-vt-rp-part-1.html)
+5. [Debugging the Windows Hypervisor: Inspecting SK Calls](https://dor00tkit.github.io/Dor00tkit/posts/debugging-the-windows-hypervisor-inspecting-sk-calls/)
