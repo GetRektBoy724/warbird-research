@@ -131,7 +131,8 @@ We can reimplement the warbird encryption and decryption routine, and inject our
 But no, here are a few reasons the above exploit wouldn't work:
 
 - VA containment (NarBase + PageCount) ensures the hash VA sits in the NAR-managed range, which does not include other writable sections in `clipsp.sys`.
-- Remapping the PAGEHrx VA does not change the NAR VA containment check, and Skmi’s PFN/PTE + image‑page validations are intended to catch remaps, so you can’t bypass the NAR checks by simply redirecting the PAGEHrx VA to another physical page from VTL0.
+- Remapping the PAGEHrx VA does bypass the NAR VA containment check, but because of NAR, Skmi’s PFN/PTE + image‑page validations are intended to catch remaps, so you can’t bypass the NAR checks by simply redirecting the PAGEHrx VA to another physical page from VTL0.
+- I also tried to modify the PAGEHrx memory protection using `MmChangeImageProtection` and it did work, but it became invalid (meaning it failed the checks in `SkmiValidateDynamicCodePages`) if we want to use that for the `MmChangeImageProtection` call inside `WarbirdFinishSectionModification`.
 
 Feel free to discuss anything about Warbird with me. You can add my Discord, my username is `getrektboy`.
 
@@ -154,3 +155,19 @@ Here's a few resources that I can recommend if you're interested more about VBS,
 4. [Intel VT-rp Part 1 by tandasat](https://tandasat.github.io/blog/2023/07/05/intel-vt-rp-part-1.html)
 5. [Debugging the Windows Hypervisor: Inspecting SK Calls](https://dor00tkit.github.io/Dor00tkit/posts/debugging-the-windows-hypervisor-inspecting-sk-calls/)
 6. [Rayanfam's Hypervisor From Scratch blog post](https://rayanfam.com/topics/hypervisor-from-scratch-part-4/)
+
+# Sponsor
+
+![sponsor](image-22.png)
+
+**WebSec BV**, a cybersecurity company based in Amsterdam, is recognized for their dedication to helping businesses and individuals protect themselves against online threats. As a valued sponsor, they have contributed significantly to the promotion of cybersecurity and the creation of a safer online world.
+
+WebSec's team of professionals is committed to staying ahead of the latest threats and developing cutting-edge solutions to keep their clients protected. Their passion for cybersecurity education has made them a trusted and reliable partner in the industry.
+
+Through their sponsorship and support, WebSec has demonstrated their commitment to promoting cybersecurity awareness and helping people stay safe online. Their contributions are greatly appreciated and have made a significant impact on the work being done in this field, such as making this project 'Warbird Research' a reality.
+
+Overall, WebSec BV is a trusted and respected leader in the fight against cybercrime, and their sponsorship and support have been instrumental in promoting a safer online world. They are a valued partner and their contributions to this important work are truly appreciated.
+
+Website: [websec.net](https://websec.net)
+
+Blog: [websec.net/blog](https://websec.net/blog)
